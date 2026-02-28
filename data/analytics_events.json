@@ -1,0 +1,4 @@
+{"timestamp": "2026-02-13T17:14:51.470815", "type": "plan_trip_click", "data": {"destination": "Gurez Valley, Kashmir"}}
+{"timestamp": "2026-02-13T17:15:28.514269", "type": "plan_trip_click", "data": {"destination": "Gurez Valley, Kashmir"}}
+{"timestamp": "2026-02-13T17:20:39.842216", "type": "suggestion_click", "data": {"category": "Food", "suggestion": "Savor Gushtaba at Gurez House"}}
+{"timestamp": "2026-02-22T18:55:32.242437", "type": "plan_trip_click", "data": {"destination": "japan"}}

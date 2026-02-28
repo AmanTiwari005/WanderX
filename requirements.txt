@@ -1,0 +1,11 @@
+duckduckgo-search
+openai
+groq
+streamlit
+streamlit-lottie
+python-dotenv
+requests
+folium
+streamlit_folium
+geopy
+fpdf

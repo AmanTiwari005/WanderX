@@ -1,0 +1,101 @@
+{
+  "feedback": [
+    {
+      "timestamp": "2026-02-12T18:42:25.523101",
+      "suggestion": "Best ramen spots",
+      "destination": "Tokyo",
+      "feedback_type": "positive",
+      "context": {
+        "category": "Food"
+      }
+    },
+    {
+      "timestamp": "2026-02-12T18:42:25.543700",
+      "suggestion": "Visit temples",
+      "destination": "Tokyo",
+      "feedback_type": "positive",
+      "context": {
+        "category": "Culture"
+      }
+    },
+    {
+      "timestamp": "2026-02-12T18:42:25.560558",
+      "suggestion": "Book hotels",
+      "destination": "Tokyo",
+      "feedback_type": "negative",
+      "context": {
+        "category": "Logistics"
+      }
+    },
+    {
+      "timestamp": "2026-02-12T19:07:02.722636",
+      "suggestion": "Savor thukpa at Cloud 9",
+      "destination": "manali",
+      "feedback_type": "positive",
+      "context": {
+        "category": "Food",
+        "weather": null
+      }
+    },
+    {
+      "timestamp": "2026-02-12T19:07:06.704374",
+      "suggestion": "Thalis at The Gaddi Palace",
+      "destination": "manali",
+      "feedback_type": "positive",
+      "context": {
+        "category": "Food",
+        "weather": null
+      }
+    },
+    {
+      "timestamp": "2026-02-12T19:07:11.246845",
+      "suggestion": "Thalis at The Gaddi Palace",
+      "destination": "manali",
+      "feedback_type": "positive",
+      "context": {
+        "category": "Food",
+        "weather": null
+      }
+    },
+    {
+      "timestamp": "2026-02-12T19:07:15.995453",
+      "suggestion": "Explore Manali Heritage Museum",
+      "destination": "manali",
+      "feedback_type": "positive",
+      "context": {
+        "category": "Culture",
+        "weather": null
+      }
+    },
+    {
+      "timestamp": "2026-02-13T17:14:38.816572",
+      "suggestion": "Peer Mahnu Waterfall Trek",
+      "destination": "Gurez Valley, Kashmir",
+      "feedback_type": "positive",
+      "context": {
+        "category": "Hidden Gems",
+        "weather": null
+      }
+    },
+    {
+      "timestamp": "2026-02-13T17:14:41.552281",
+      "suggestion": "Secret Apple Orchard Picnic Spots",
+      "destination": "Gurez Valley, Kashmir",
+      "feedback_type": "positive",
+      "context": {
+        "category": "Hidden Gems",
+        "weather": null
+      }
+    },
+    {
+      "timestamp": "2026-02-13T17:14:45.596262",
+      "suggestion": "Campfire Stories with Shepherds",
+      "destination": "Gurez Valley, Kashmir",
+      "feedback_type": "positive",
+      "context": {
+        "category": "Hidden Gems",
+        "weather": null
+      }
+    }
+  ]
+}
