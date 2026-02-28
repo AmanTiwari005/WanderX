@@ -1,4 +1,4 @@
-# 🧭 WanderTrip — AI Travel Copilot
+# 🧭 WanderX — AI Travel Copilot
 
 An agentic AI-powered travel planning companion that makes smart, data-driven decisions using live weather, safety intelligence, crowd analysis, and cultural insights.
 
