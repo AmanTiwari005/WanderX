@@ -3,6 +3,7 @@ openai
 groq
 streamlit
 streamlit-lottie
+streamlit-antd-components
 python-dotenv
 requests
 folium

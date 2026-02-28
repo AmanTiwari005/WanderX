@@ -9,7 +9,6 @@ import asyncio
 import re
 import textwrap
 from utils.model_registry import get_active_model_id, get_active_model_info, AVAILABLE_MODELS, get_model_display_options
-from streamlit_option_menu import option_menu
 import streamlit_antd_components as sac
 
 from streamlit_lottie import st_lottie
