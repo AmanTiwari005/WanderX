@@ -40,6 +40,16 @@ from utils.trending_interests import get_trending_interests
 
 load_dotenv()
 
+# ================= STREAMLIT CLOUD SECRETS BRIDGE =================
+# On Streamlit Cloud, secrets are in st.secrets, not .env
+# Bridge them into os.environ so os.getenv() works everywhere
+try:
+    for key in st.secrets:
+        if isinstance(st.secrets[key], str):
+            os.environ.setdefault(key, st.secrets[key])
+except Exception:
+    pass  # No secrets configured or running locally
+
 # ================= PAGE CONFIG =================
 st.set_page_config(
     page_title="WanderTrip — AI Travel Copilot",

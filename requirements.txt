@@ -10,3 +10,7 @@ folium
 streamlit_folium
 geopy
 fpdf
+reportlab
+gTTS
+wikipedia
+googlesearch-python
