@@ -1,5 +1,6 @@
 import concurrent.futures
 import logging
+from datetime import datetime
 
 from agents.weather_agent import WeatherAgent
 from agents.news_agent import NewsAgent
@@ -53,6 +54,99 @@ class AgentOrchestrator:
         self.itinerary_agent = ItineraryAgent(groq_client)
         
         self.cache = get_cache()
+        self._last_risk_by_destination = {}
+        self._last_alert_fingerprints_by_destination = {}
+        self._last_snapshot_by_destination = {}
+
+    def _alert_fingerprint(self, alert):
+        title = (alert.get("title") or "").strip().lower()
+        message = (alert.get("message") or "").strip().lower()
+        return f"{title}|{message}"
+
+    def _build_realtime_decision_snapshot(self, destination, current_risk, alerts, intel_bundle, decision_automation):
+        prev_risk = self._last_risk_by_destination.get(destination)
+        prev_alert_fps = self._last_alert_fingerprints_by_destination.get(destination, set())
+
+        current_score = float(current_risk.get("total_risk_score", 0) or 0)
+        prev_score = float(prev_risk.get("total_risk_score", current_score) or current_score) if prev_risk else current_score
+        risk_delta = round(current_score - prev_score, 1)
+
+        if risk_delta >= 4:
+            direction = "rising"
+        elif risk_delta <= -4:
+            direction = "declining"
+        else:
+            direction = "stable"
+
+        current_alert_fps = {self._alert_fingerprint(a) for a in (alerts or [])}
+        new_alerts = len(current_alert_fps - prev_alert_fps)
+        resolved_alerts = len(prev_alert_fps - current_alert_fps)
+
+        critical_alerts = [a for a in (alerts or []) if (a.get("type") or "").lower() == "critical"]
+        high_alerts = [a for a in (alerts or []) if (a.get("type") or "").lower() in ("high", "warning")]
+
+        weather_intel = intel_bundle.get("weather_intel") or {}
+        news_intel = intel_bundle.get("news_intel") or {}
+        crowd_intel = intel_bundle.get("crowd_intel") or {}
+        mobility_intel = intel_bundle.get("mobility_intel") or {}
+        live_pulse_intel = intel_bundle.get("live_pulse_intel") or {}
+
+        feed_checks = {
+            "weather": bool(weather_intel) and not weather_intel.get("error"),
+            "news": bool(news_intel) and not news_intel.get("error"),
+            "crowd": "crowd_score" in crowd_intel and not crowd_intel.get("error"),
+            "mobility": bool(mobility_intel) and not mobility_intel.get("error"),
+            "live_pulse": bool(live_pulse_intel) and not live_pulse_intel.get("error"),
+        }
+
+        weather_age = weather_intel.get("data_age_minutes", 0) if isinstance(weather_intel, dict) else 999
+        weather_fresh_bonus = 5 if isinstance(weather_age, (int, float)) and weather_age <= 60 else 0
+        live_status = ((live_pulse_intel.get("freshness") or {}).get("status") or "").lower()
+        live_fresh_bonus = 5 if live_status == "live" else 0
+
+        feed_score = int((sum(1 for ok in feed_checks.values() if ok) / max(1, len(feed_checks))) * 100)
+        feed_score = min(100, feed_score + weather_fresh_bonus + live_fresh_bonus)
+
+        confidence = float((current_risk.get("confidence") or {}).get("score", 0.6) or 0.6)
+        confidence_pct = int(confidence * 100)
+
+        auto_actions = decision_automation.get("automation_actions", []) if isinstance(decision_automation, dict) else []
+        next_actions = []
+        for action in auto_actions:
+            reason = action.get("reason")
+            if reason and reason not in next_actions:
+                next_actions.append(reason)
+
+        for alert in critical_alerts[:2]:
+            action_text = alert.get("action")
+            if action_text and action_text not in next_actions:
+                next_actions.append(action_text)
+
+        urgency_index = int(min(
+            100,
+            current_score * 0.62 +
+            len(critical_alerts) * 11 +
+            max(0, risk_delta) * 2.2 +
+            max(0, 100 - feed_score) * 0.2
+        ))
+
+        return {
+            "destination": destination,
+            "generated_at": datetime.now().isoformat(),
+            "risk_delta": risk_delta,
+            "risk_direction": direction,
+            "risk_score": int(current_score),
+            "confidence_pct": confidence_pct,
+            "feed_health_score": feed_score,
+            "feed_checks": feed_checks,
+            "new_alerts": new_alerts,
+            "resolved_alerts": resolved_alerts,
+            "critical_alert_count": len(critical_alerts),
+            "high_alert_count": len(high_alerts),
+            "risk_mode": (decision_automation or {}).get("risk_mode", "normal"),
+            "urgency_index": urgency_index,
+            "next_actions": next_actions[:5],
+        }
         
     def _safe_result(self, future, agent_name, fallback=None):
         """
@@ -255,6 +349,20 @@ class AgentOrchestrator:
         safety_warnings = brain_result["safety_warnings"]
         travel_score = brain_result["travel_score"]
         cross_agent_insights = brain_result["cross_agent_insights"]
+        decision_automation = brain_result.get("decision_automation", {})
+        realtime_decision = self._build_realtime_decision_snapshot(
+            destination=destination,
+            current_risk=risk_assessment,
+            alerts=alerts,
+            intel_bundle=intel_bundle,
+            decision_automation=decision_automation,
+        )
+
+        self._last_risk_by_destination[destination] = risk_assessment
+        self._last_alert_fingerprints_by_destination[destination] = {
+            self._alert_fingerprint(a) for a in (alerts or [])
+        }
+        self._last_snapshot_by_destination[destination] = realtime_decision
         
         # 5. Itinerary Generation (with full intel bundle)
         duration = int(profile.get("duration", 1))
@@ -271,14 +379,32 @@ class AgentOrchestrator:
                 "live_pulse_intel": live_pulse_intel,
             }
             try:
-                itinerary = self.itinerary_agent.generate_itinerary(
-                    destination, duration, itin_context, profile
-                )
-                # 5b. Validate itinerary against live conditions
-                if itinerary and not itinerary.get("error"):
-                    itinerary_validation = self.travel_brain.validate_itinerary(
-                        itinerary, intel_bundle, profile
+                # CRITICAL SAFETY ABORT
+                if risk_assessment.get("verdict") in ["Critical", "Unsafe"] and any(f.get("level") == "Critical" for f in risk_assessment.get("risk_factors", [])):
+                    logger.warning(f"Aborting standard itinerary generation for {destination} due to CRITICAL risk.")
+                    itinerary = {
+                        f"day_{i+1}": {
+                            "title": "🚨 EMERGENCY ABORT PROTOCOL 🚨",
+                            "morning": {
+                                "preview_desc": "CRITICAL RISK DETECTED: ITINERARY SUSPENDED.",
+                                "activity": f"WanderTrip has suspended standard itinerary generation for {destination} due to {risk_assessment.get('verdict')} safety risks. The area is currently flagged as unsafe for typical tourist activities. Review the Risk Dashboard immediately and follow embassy or local authority evacuation advice.",
+                                "location": "Current Safe Zone / Hotel Shelter",
+                                "duration": "All Day",
+                                "cost": "N/A",
+                                "transport": "Safe transit only. Avoid affected areas.",
+                                "insider_tip": "Keep passports, emergency cash, and charged communication devices on you at all times."
+                            }
+                        } for i in range(duration)
+                    }
+                else:
+                    itinerary = self.itinerary_agent.generate_itinerary(
+                        destination, duration, itin_context, profile
                     )
+                    # 5b. Validate itinerary against live conditions
+                    if itinerary and not itinerary.get("error"):
+                        itinerary_validation = self.travel_brain.validate_itinerary(
+                            itinerary, intel_bundle, profile
+                        )
             except Exception as e:
                 logger.error(f"ItineraryAgent failed: {e}")
                 itinerary = {"error": str(e)}
@@ -302,6 +428,8 @@ class AgentOrchestrator:
             "safety_warnings": safety_warnings,
             "travel_score": travel_score,
             "cross_agent_insights": cross_agent_insights,
+            "decision_automation": decision_automation,
+            "realtime_decision": realtime_decision,
             "itinerary": itinerary,
             "itinerary_validation": itinerary_validation,
             "engine_metadata": brain_result.get("engine_metadata", {}),

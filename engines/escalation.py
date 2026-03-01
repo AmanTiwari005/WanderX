@@ -1,281 +1,185 @@
-"""
-Time-Based Escalation Engine for WanderX.
-
-Upgrades alert severity based on:
-1. Time elapsed since alert creation (age-based)
-2. Proximity to threshold (approaching deadline/event)
-3. Compound signal convergence (multiple sources agree)
-"""
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from engines.severity import Severity, SeverityLevel
+from engines.severity import Severity
 
 logger = logging.getLogger("wanderx.escalation")
 
 
-class EscalationRule:
-    """Base class for escalation rules."""
-    def __init__(self, name, description=""):
-        self.name = name
-        self.description = description
-
-    def apply(self, alert, context=None):
-        """
-        Evaluate whether this alert should be escalated.
-        Returns: (escalated: bool, new_severity: SeverityLevel, reason: str)
-        """
-        raise NotImplementedError
-
-
-class TimeEscalation(EscalationRule):
-    """
-    Age-based escalation: if an alert has been active longer than its
-    escalation window, bump it up one level.
-    """
-    def __init__(self):
-        super().__init__("time_escalation", "Escalates alerts based on how long they've been active.")
-
-    def apply(self, alert, context=None):
-        created_at = alert.get("created_at")
-        if not created_at:
-            return False, None, ""
-
-        severity = alert.get("_severity_obj")
-        if not severity or not isinstance(severity, SeverityLevel):
-            severity = Severity.from_string(alert.get("type", "info"))
-
-        # Check if this severity level has an escalation window
-        if severity.escalates_after_min is None:
-            return False, None, ""
-
-        now = context.get("now", datetime.now()) if context else datetime.now()
-        if isinstance(created_at, str):
-            try:
-                created_at = datetime.fromisoformat(created_at)
-            except (ValueError, TypeError):
-                return False, None, ""
-
-        age_minutes = (now - created_at).total_seconds() / 60
-
-        if age_minutes >= severity.escalates_after_min:
-            new_severity = Severity.escalate(severity)
-            return True, new_severity, f"Alert active for {int(age_minutes)}min — escalated from {severity.name} to {new_severity.name}"
-
-        return False, None, ""
-
-
-class ProximityEscalation(EscalationRule):
-    """
-    Proximity-based escalation: when a condition is approaching a critical
-    threshold, escalate preemptively.
-    
-    Examples:
-    - Daylight running out → escalate outdoor warnings
-    - Rain approaching → escalate weather warnings
-    - Temperature rising toward extreme → preemptive heat alert
-    """
-    def __init__(self):
-        super().__init__("proximity_escalation", "Escalates based on approaching thresholds.")
-
-    def apply(self, alert, context=None):
-        if not context:
-            return False, None, ""
-
-        category = alert.get("title", "")
-        current_severity = Severity.from_string(alert.get("type", "info"))
-
-        # Daylight proximity: if < 30 min of daylight and there are outdoor warnings
-        daylight = context.get("daylight_remaining")
-        if daylight is not None and daylight < 0.5:
-            if category in ("Daylight", "Weather", "Visibility"):
-                if current_severity < Severity.HIGH:
-                    return True, Severity.HIGH, f"Only {daylight:.1f}h daylight left — urgency increased"
-
-        # Temperature proximity: feels like approaching extremes
-        temp = context.get("temperature_c", 25)
-        if temp > 43 and category == "High Heat" and current_severity < Severity.CRITICAL:
-            return True, Severity.CRITICAL, f"Temperature at {temp}°C — extreme danger"
-        
-        if temp < -10 and category == "Cold Snap" and current_severity < Severity.CRITICAL:
-            return True, Severity.CRITICAL, f"Temperature at {temp}°C — extreme cold danger"
-
-        # Crowd surge: if crowd score keeps rising
-        crowd_score = context.get("crowd_score", 0)
-        if crowd_score >= 9 and category == "Crowd" and current_severity < Severity.HIGH:
-            return True, Severity.HIGH, f"Crowd score at {crowd_score}/10 — extreme crowding"
-
-        return False, None, ""
-
-
-class CompoundEscalation(EscalationRule):
-    """
-    Compound escalation: when multiple risk sources all report concerning
-    signals simultaneously, escalate the overall alert level.
-    """
-    def __init__(self):
-        super().__init__("compound_escalation", "Escalates when multiple risk sources converge.")
-
-    def apply(self, alert, context=None):
-        if not context:
-            return False, None, ""
-
-        # Count active risk signals
-        risk_signals = 0
-        signal_sources = []
-
-        weather_data = context.get("weather_data", {})
-        rain = weather_data.get("rain_probability", 0)
-        if rain > 0.5:
-            risk_signals += 1
-            signal_sources.append("weather")
-
-        news = context.get("news_intel", {})
-        if news and news.get("safety_risks"):
-            risk_signals += len(news["safety_risks"])
-            signal_sources.append("news")
-
-        crowd_score = context.get("crowd_score", 0)
-        if crowd_score >= 7:
-            risk_signals += 1
-            signal_sources.append("crowd")
-
-        health = context.get("health_intel", {})
-        seasonal = (health.get("seasonal_risks") or "").lower() if health else ""
-        if any(kw in seasonal for kw in ["outbreak", "dengue", "cholera"]):
-            risk_signals += 1
-            signal_sources.append("health")
-
-        # If 3+ risk sources converge, escalate
-        if risk_signals >= 3:
-            current = Severity.from_string(alert.get("type", "info"))
-            if current < Severity.HIGH:
-                return True, Severity.HIGH, f"Multiple risk sources active ({', '.join(signal_sources)}) — compound escalation"
-
-        return False, None, ""
-
-
 class EscalationEngine:
     """
-    Applies all escalation rules to a list of alerts.
+    RTRIE escalation layer
+    - Time-aware escalation using created_at + ttl_minutes
+    - Signal-aware escalation from current context
+    - Countdown alerts for immediate operational transitions
     """
-    def __init__(self):
-        self.rules = [
-            TimeEscalation(),
-            ProximityEscalation(),
-            CompoundEscalation(),
-        ]
 
     def apply_escalations(self, alerts, context=None):
-        """
-        Process a list of alerts through all escalation rules.
-        
-        Args:
-            alerts: List of alert dicts from AlertEngine
-            context: Dict with current conditions (daylight, temp, crowd, etc.)
-            
-        Returns:
-            list: Updated alerts with escalated severities and escalation trail
-        """
         context = context or {}
-        escalated_alerts = []
+        now = context.get("now") or datetime.now()
+        escalated = []
 
-        for alert in alerts:
-            escalated = dict(alert)  # Copy
-            escalation_trail = []
+        for alert in alerts or []:
+            current = dict(alert)
+            trail = []
 
-            for rule in self.rules:
-                did_escalate, new_severity, reason = rule.apply(escalated, context)
-                if did_escalate and new_severity:
-                    escalated["type"] = new_severity.name
-                    escalated["priority"] = new_severity.priority
-                    escalated["icon"] = new_severity.icon
-                    escalated["_severity_obj"] = new_severity
-                    escalation_trail.append({
-                        "rule": rule.name,
-                        "new_level": new_severity.name,
-                        "reason": reason
+            if not current.get("created_at"):
+                current["created_at"] = now.isoformat()
+
+            # 1) TTL age-based escalation
+            ttl = current.get("ttl_minutes")
+            age = self._age_minutes(current.get("created_at"), now)
+            if ttl and age is not None and age >= ttl:
+                new_level = self._escalate_level(current.get("type", "info"))
+                if new_level != current.get("type"):
+                    current["type"] = new_level
+                    current["priority"] = self._priority_for_level(new_level)
+                    current["icon"] = self._icon_for_level(new_level, current.get("icon"))
+                    trail.append({
+                        "rule": "ttl_age",
+                        "reason": f"Alert age {int(age)}m exceeded ttl {ttl}m",
+                        "new_level": new_level,
                     })
 
-            if escalation_trail:
-                escalated["escalated"] = True
-                escalated["escalation_trail"] = escalation_trail
-            else:
-                escalated["escalated"] = False
+            # 2) Context pressure escalation
+            pressure = self._context_pressure_score(context)
+            if pressure >= 80 and current.get("type") in ("info", "warning"):
+                new_level = "high"
+                current["type"] = new_level
+                current["priority"] = self._priority_for_level(new_level)
+                trail.append({
+                    "rule": "context_pressure",
+                    "reason": f"High multi-signal pressure ({pressure}/100)",
+                    "new_level": new_level,
+                })
+            elif pressure >= 92 and current.get("type") in ("high", "warning"):
+                new_level = "critical"
+                current["type"] = new_level
+                current["priority"] = self._priority_for_level(new_level)
+                trail.append({
+                    "rule": "context_pressure",
+                    "reason": f"Critical pressure cluster ({pressure}/100)",
+                    "new_level": new_level,
+                })
 
-            escalated_alerts.append(escalated)
+            current["escalated"] = bool(trail)
+            if trail:
+                current["escalation_trail"] = trail
 
-        # Re-sort by priority after escalations
-        escalated_alerts.sort(
-            key=lambda a: a.get("priority", 0),
-            reverse=True
-        )
+            escalated.append(current)
 
-        return escalated_alerts
+        escalated.sort(key=lambda a: (a.get("priority", 0), a.get("risk_score", 0)), reverse=True)
+        return escalated
 
     def generate_countdown_alerts(self, context):
-        """
-        Generate time-sensitive countdown alerts for approaching conditions.
-        
-        Args:
-            context: Current conditions dict
-            
-        Returns:
-            list: Countdown alert dicts
-        """
+        now_iso = (context.get("now") or datetime.now()).isoformat()
         countdowns = []
 
-        # Daylight countdown
         daylight = context.get("daylight_remaining")
         if daylight is not None:
-            if daylight < 0.5:
+            if daylight <= 0.5:
                 countdowns.append({
                     "type": "critical",
-                    "title": "Sunset Imminent",
+                    "title": "Daylight Expiry",
                     "icon": "🌅",
-                    "message": f"Only {int(daylight * 60)} minutes of daylight left!",
-                    "action": "Head to your accommodation or a well-lit area now.",
-                    "priority": Severity.CRITICAL.priority,
+                    "message": f"Only {int(daylight * 60)} minutes of daylight remain.",
+                    "action": "Initiate return-to-safe-zone route immediately.",
+                    "priority": self._priority_for_level("critical"),
+                    "created_at": now_iso,
+                    "ttl_minutes": 20,
                     "countdown_minutes": int(daylight * 60),
-                    "escalated": True
+                    "escalated": True,
                 })
-            elif daylight < 1.5:
+            elif daylight <= 1.5:
                 countdowns.append({
                     "type": "warning",
-                    "title": "Sunset Approaching",
+                    "title": "Daylight Buffer Low",
                     "icon": "🌅",
-                    "message": f"About {int(daylight * 60)} minutes of daylight remaining.",
-                    "action": "Start wrapping up outdoor activities.",
-                    "priority": Severity.MEDIUM.priority,
+                    "message": f"Daylight buffer is down to {int(daylight * 60)} minutes.",
+                    "action": "Stop adding new outdoor blocks and wrap active ones.",
+                    "priority": self._priority_for_level("warning"),
+                    "created_at": now_iso,
+                    "ttl_minutes": 30,
                     "countdown_minutes": int(daylight * 60),
-                    "escalated": False
+                    "escalated": False,
                 })
 
-        # Rain approaching (if forecast data available)
         rain_in_hours = context.get("rain_expected_in_hours")
-        if rain_in_hours is not None and rain_in_hours < 2:
+        if isinstance(rain_in_hours, (int, float)) and rain_in_hours <= 2:
             minutes = int(rain_in_hours * 60)
-            if minutes < 30:
-                countdowns.append({
-                    "type": "warning",
-                    "title": "Rain Imminent",
-                    "icon": "🌧️",
-                    "message": f"Rain expected in ~{minutes} minutes.",
-                    "action": "Seek shelter or move activities indoors immediately.",
-                    "priority": Severity.HIGH.priority,
-                    "countdown_minutes": minutes,
-                    "escalated": True
-                })
-            else:
-                countdowns.append({
-                    "type": "info",
-                    "title": "Rain Expected",
-                    "icon": "🌧️",
-                    "message": f"Rain forecasted in about {minutes} minutes.",
-                    "action": "Have indoor backup plans ready.",
-                    "priority": Severity.LOW.priority,
-                    "countdown_minutes": minutes,
-                    "escalated": False
-                })
+            level = "high" if minutes <= 30 else "warning"
+            countdowns.append({
+                "type": level,
+                "title": "Rain Window Closing",
+                "icon": "🌧️",
+                "message": f"Rain likely in about {minutes} minutes.",
+                "action": "Shift exposed movement to covered/indoor corridors.",
+                "priority": self._priority_for_level(level),
+                "created_at": now_iso,
+                "ttl_minutes": 25,
+                "countdown_minutes": minutes,
+                "escalated": level == "high",
+            })
 
         return countdowns
+
+    def _age_minutes(self, created_at, now):
+        if not created_at:
+            return None
+        try:
+            created_dt = created_at if isinstance(created_at, datetime) else datetime.fromisoformat(str(created_at))
+            return (now - created_dt).total_seconds() / 60.0
+        except Exception:
+            return None
+
+    def _context_pressure_score(self, context):
+        score = 0
+
+        temp = context.get("temperature_c")
+        if isinstance(temp, (int, float)) and (temp >= 40 or temp <= -2):
+            score += 28
+
+        crowd = context.get("crowd_score", 0)
+        if crowd >= 8:
+            score += 18
+
+        weather = context.get("weather_data") or {}
+        rain_prob = weather.get("rain_probability", 0)
+        if rain_prob >= 0.8:
+            score += 22
+
+        news = context.get("news_intel") or {}
+        if len(news.get("safety_risks") or []) >= 2:
+            score += 20
+
+        health = context.get("health_intel") or {}
+        seasonal = (health.get("seasonal_risks") or "").lower()
+        if any(k in seasonal for k in ["outbreak", "dengue", "cholera", "epidemic"]):
+            score += 20
+
+        return min(100, score)
+
+    def _escalate_level(self, level):
+        chain = ["info", "warning", "high", "critical"]
+        level = (level or "info").lower()
+        if level not in chain:
+            return "warning"
+        idx = chain.index(level)
+        return chain[min(len(chain) - 1, idx + 1)]
+
+    def _priority_for_level(self, level):
+        return {
+            "critical": Severity.CRITICAL.priority,
+            "high": Severity.HIGH.priority,
+            "warning": Severity.MEDIUM.priority,
+            "info": Severity.INFO.priority,
+        }.get((level or "info").lower(), Severity.INFO.priority)
+
+    def _icon_for_level(self, level, existing):
+        fallback = {
+            "critical": "🚨",
+            "high": "⚠️",
+            "warning": "⚠️",
+            "info": "ℹ️",
+        }
+        return existing or fallback.get((level or "info").lower(), "ℹ️")

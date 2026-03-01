@@ -3,6 +3,8 @@ from utils.web_search import search_web, search_news
 import json
 import logging
 from datetime import datetime
+import time
+import concurrent.futures
 
 logger = logging.getLogger("wanderx.web_search_agent")
 
@@ -13,14 +15,41 @@ class WebSearchAgent:
 
     def live_pulse(self, location, dates, interests=None):
         """
-        Aggregates "Live Pulse" intelligence: Events, Trends, and Vibe Check.
+        RTRIE live pulse aggregator:
+        - concurrent fast collection
+        - includes chaos/disruption signal
+        - emits freshness metadata for risk confidence model
         """
-        intel = {
-            "events": self.find_events(location, dates),
-            "trends": self.find_hidden_gems(location),
-            "vibe": self.get_vibe_check(location),
-            "reality_check": [] # Can be populated on demand
+        started = time.time()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+            futures = {
+                "events": pool.submit(self.find_events, location, dates),
+                "trends": pool.submit(self.find_hidden_gems, location),
+                "vibe": pool.submit(self.get_vibe_check, location),
+                "chaos": pool.submit(self.detect_chaos, location),
+                "price_signal": pool.submit(self.predict_prices, location, dates),
+            }
+
+            intel = {}
+            for key, fut in futures.items():
+                try:
+                    intel[key] = fut.result(timeout=18)
+                except Exception as e:
+                    logger.warning(f"Live pulse subtask '{key}' failed: {e}")
+                    intel[key] = {} if key in ("vibe", "chaos", "price_signal") else []
+
+        latency_ms = round((time.time() - started) * 1000)
+
+        intel["reality_check"] = []
+        intel["freshness"] = {
+            "fetched_at": datetime.now().isoformat(),
+            "latency_ms": latency_ms,
+            "source": "live_web_intel",
+            "status": "live" if latency_ms < 12000 else "degraded",
         }
+        intel["error"] = False
+
         return intel
 
     def find_events(self, location, dates):
@@ -183,20 +212,19 @@ class WebSearchAgent:
 
     def detect_chaos(self, location):
         """
-        ⚡ Real-Time Chaos Detector: Monitors for strikes, protests, closures.
+        ⚡ Real-Time Chaos Detector: Monitors for strikes, protests, closures, and major emergencies.
         """
         try:
-            query = f"{location} strike protest airport closure warning today 2025"
-            results = search_web(query, max_results=6)
-            
+            # broadened query string to include severe disruptions
+            query = f"{location} strike OR protest OR airport closure OR warning OR explosion OR attack OR evacuation OR emergency {datetime.now().year}"
+            results = search_web(query, max_results=6, timelimit='w')
+
             if not results:
                 return {"status": "clear", "alerts": []}
 
             prompt = f"""
             Scan these search results for any ACTIVE disruptions in {location}:
-            strikes, protests, airport closures, natural disasters, or safety warnings.
-            
-            Search Results: {json.dumps(results[:4])}
+            strikes, protests, airport closures, natural disasters, terrorism, war, or safety warnings.
             
             Return JSON:
             {{

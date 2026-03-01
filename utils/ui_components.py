@@ -1,18 +1,55 @@
 import streamlit as st
 import re
 import requests
+import logging
+import time
+from functools import lru_cache
 
+logger = logging.getLogger("wanderx.ui_components")
+_LOTTIE_WARNED_URLS = set()
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_lottieurl(url: str):
-    try:
-        r = requests.get(url, timeout=5)
-        if r.status_code != 200:
+    """
+    Fetch Lottie JSON with retries and caching.
+    - Caches successful payloads for 1 hour to avoid repeated network calls.
+    - Retries transient network failures with backoff.
+    - Logs at most once per URL on failure (prevents console spam on reruns).
+    """
+    retries = 3
+    backoff_seconds = (0.4, 1.0, 2.0)
+
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, timeout=(5, 15))
+            if response.status_code == 200:
+                return response.json()
+
+            # Non-200 from CDN; retry for server-side/transient classes
+            if response.status_code in (429, 500, 502, 503, 504):
+                if attempt < retries - 1:
+                    time.sleep(backoff_seconds[attempt])
+                    continue
+
+            if url not in _LOTTIE_WARNED_URLS:
+                logger.warning(f"Lottie load failed ({response.status_code}) for {url}")
+                _LOTTIE_WARNED_URLS.add(url)
             return None
-        return r.json()
-    except requests.exceptions.RequestException as e:
-        print(f"Error loading lottie animation from {url}: {e}")
-        return None
+
+        except requests.exceptions.RequestException as exc:
+            if attempt < retries - 1:
+                time.sleep(backoff_seconds[attempt])
+                continue
+
+            if url not in _LOTTIE_WARNED_URLS:
+                logger.warning(f"Error loading lottie animation from {url}: {exc}")
+                _LOTTIE_WARNED_URLS.add(url)
+            return None
+
+    return None
 
 
+@lru_cache(maxsize=1)
 def get_design_tokens():
     """
     Returns the core CSS variables and design tokens for the application.
@@ -226,6 +263,7 @@ def render_hero_card(data):
     """)
     return minify_html(html)
 
+@lru_cache(maxsize=1)
 def get_custom_css():
     """
     Returns the complete CSS block to be injected into Streamlit.
@@ -245,6 +283,29 @@ def get_custom_css():
                 radial-gradient(circle at 50% 50%, rgba(255, 0, 110, 0.05) 0%, transparent 50%);
             color: #f8fafc;
             font-family: 'Inter', sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        .main .block-container {
+            max-width: 1280px;
+            padding-top: 1rem;
+            padding-bottom: 2rem;
+            padding-left: 1.25rem;
+            padding-right: 1.25rem;
+        }
+
+        .travel-card-modern,
+        .feature-card,
+        .feature-card-landing,
+        .intel-card,
+        .itin-slot,
+        .chat-row,
+        .carousel-item {
+            content-visibility: auto;
+            contain-intrinsic-size: 180px;
         }
 
         /* =================== ANIMATIONS =================== */
@@ -310,7 +371,7 @@ def get_custom_css():
         /* Force the sidebar to drop its typical background where possible */
         [data-testid="stSidebar"] {
             background-color: rgba(15, 23, 42, 0.5) !important;
-            backdrop-filter: blur(12px) !important;
+            backdrop-filter: blur(8px) !important;
             border-right: 1px solid rgba(255, 255, 255, 0.05) !important;
         }
 
@@ -380,14 +441,15 @@ def get_custom_css():
         /* =================== GLASS CARDS =================== */
         .glass-card {
             background: linear-gradient(145deg, rgba(15, 23, 42, 0.8) 0%, rgba(15, 23, 42, 0.4) 100%);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
             border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 20px;
             padding: 32px 24px;
-            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
             position: relative;
             overflow: hidden;
+            will-change: transform;
         }
         .glass-card::before {
             content: "";
@@ -414,14 +476,15 @@ def get_custom_css():
         }
         .feature-card-landing {
             background: linear-gradient(145deg, rgba(15, 23, 42, 0.7) 0%, rgba(15, 23, 42, 0.3) 100%);
-            backdrop-filter: blur(16px);
+            backdrop-filter: blur(10px);
             border: 1px solid rgba(255, 255, 255, 0.06);
             border-radius: 16px;
             padding: 28px 22px;
             text-align: center;
-            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
             position: relative;
             overflow: hidden;
+            will-change: transform;
         }
         .feature-card-landing::after {
             content: "";
@@ -514,8 +577,7 @@ def get_custom_css():
             border-radius: 12px;
             cursor: pointer;
             text-decoration: none;
-            transition: all 0.3s ease;
-            animation: pulseGlow 2.5s infinite;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
             letter-spacing: 0.5px;
         }
         .cta-btn:hover {
@@ -554,6 +616,7 @@ def get_custom_css():
             margin-bottom: 12px;
             transition: transform 0.3s ease, box-shadow 0.3s ease, background 0.3s ease;
             animation: fadeInLeft 0.5s ease-out both;
+            will-change: transform;
         }
         .travel-card-modern:hover { transform: translateX(4px); background: rgba(255,255,255,0.05); box-shadow: 0 4px 20px rgba(0, 242, 254, 0.1); }
 
@@ -719,16 +782,17 @@ def get_custom_css():
         /* Action Cards */
         .action-card {
             background: linear-gradient(135deg, rgba(20, 25, 40, 0.8), rgba(15, 20, 30, 0.9));
-            backdrop-filter: blur(20px);
+            backdrop-filter: blur(12px);
             border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 20px;
             padding: 32px 24px;
             text-align: center;
-            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
             position: relative;
             overflow: hidden;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
             animation: scaleIn 0.5s ease-out both;
+            will-change: transform;
         }
         .action-card:hover { transform: translateY(-8px) scale(1.02); border-color: rgba(0, 229, 255, 0.3); box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4), 0 0 20px rgba(0, 242, 254, 0.08); }
         .action-icon { font-size: 3rem; margin-bottom: 16px; display: block; animation: float 3s ease-in-out infinite; }
@@ -737,7 +801,7 @@ def get_custom_css():
         /* Question Cards */
         .question-card {
             background: linear-gradient(135deg, rgba(20, 25, 40, 0.9), rgba(15, 20, 30, 0.95));
-            backdrop-filter: blur(20px);
+            backdrop-filter: blur(12px);
             border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 20px;
             padding: 32px;
@@ -764,10 +828,11 @@ def get_custom_css():
             border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 20px;
             padding: 32px;
-            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            transition: transform 0.25s ease, border-color 0.25s ease, background 0.25s ease, box-shadow 0.25s ease;
             position: relative;
             overflow: hidden;
-            backdrop-filter: blur(10px);
+            backdrop-filter: blur(8px);
+            will-change: transform;
         }
         .feature-card::before {
              content: "";
@@ -874,7 +939,7 @@ def get_custom_css():
             color: #e0e6ed;
             font-size: 0.95rem;
             line-height: 1.6;
-            backdrop-filter: blur(10px);
+            backdrop-filter: blur(8px);
         }
         .bot-bubble {
             background: linear-gradient(145deg, rgba(15, 23, 42, 0.7), rgba(15, 23, 42, 0.3));
@@ -885,7 +950,7 @@ def get_custom_css():
             color: #f1f5f9;
             font-size: 0.95rem;
             line-height: 1.7;
-            backdrop-filter: blur(16px);
+            backdrop-filter: blur(10px);
         }
 
         /* =================== DEEP INTELLIGENCE CARDS =================== */
@@ -899,13 +964,14 @@ def get_custom_css():
         }
         .intel-card {
             background: linear-gradient(145deg, rgba(15, 23, 42, 0.75), rgba(15, 23, 42, 0.35));
-            backdrop-filter: blur(16px);
+            backdrop-filter: blur(10px);
             border: 1px solid rgba(255, 255, 255, 0.06);
             border-radius: 16px;
             padding: 20px;
             margin-bottom: 12px;
             transition: border-color 0.3s ease, transform 0.3s ease;
             animation: slideInUp 0.5s ease-out both;
+            will-change: transform;
         }
         .intel-card:nth-child(1) { animation-delay: 0.1s; }
         .intel-card:nth-child(2) { animation-delay: 0.2s; }
@@ -1095,7 +1161,7 @@ def get_custom_css():
             transition: all 0.3s ease !important;
         }
         div[data-testid="stTabs"] button[aria-selected="true"] {
-            animation: pulseGlow 2s infinite;
+            box-shadow: inset 0 -2px 0 rgba(0, 242, 254, 0.75);
         }
 
         /* Expanders */
@@ -1111,7 +1177,124 @@ def get_custom_css():
             border-right: 1px solid rgba(255, 255, 255, 0.06);
         }
         section[data-testid="stSidebar"] div[data-testid="stMetricValue"] {
-            animation: breathe 4s ease-in-out infinite;
+            animation: none;
+        }
+
+        /* =================== RESPONSIVE & ACCESSIBILITY =================== */
+        @media (max-width: 992px) {
+            .main .block-container {
+                max-width: 100%;
+                padding-left: 1rem;
+                padding-right: 1rem;
+            }
+
+            .gradient-headline {
+                font-size: 2.4rem;
+                letter-spacing: -1px;
+                animation-duration: 9s;
+            }
+
+            .hero-subtitle {
+                font-size: 1rem;
+                margin-bottom: 24px;
+            }
+
+            .metrics-strip {
+                gap: 22px;
+                margin: 24px 0;
+                padding: 18px 14px;
+            }
+
+            .feature-grid,
+            .feature-grid-landing {
+                grid-template-columns: 1fr;
+                gap: 14px;
+                margin: 24px 0;
+            }
+
+            .question-card,
+            .glass-card,
+            .action-card,
+            .feature-card,
+            .feature-card-landing {
+                border-radius: 14px;
+                padding: 20px 16px;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .gradient-headline {
+                font-size: 2rem;
+            }
+
+            .cta-row {
+                gap: 10px;
+            }
+
+            .cta-btn,
+            .cta-btn-outline {
+                width: 100%;
+                text-align: center;
+                padding: 12px 16px;
+            }
+
+            .chat-row {
+                gap: 8px;
+                margin-bottom: 12px;
+            }
+
+            .user-bubble,
+            .bot-bubble {
+                max-width: 100%;
+                padding: 12px 14px;
+                font-size: 0.9rem;
+            }
+
+            .hero-footer {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
+            }
+
+            .itin-slot {
+                flex-direction: column;
+                gap: 10px;
+            }
+
+            .itin-slot-icon {
+                width: 38px;
+                height: 38px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .main .block-container {
+                padding-left: 0.7rem;
+                padding-right: 0.7rem;
+            }
+
+            .gradient-headline {
+                font-size: 1.7rem;
+            }
+
+            .hero-badge {
+                font-size: 0.68rem;
+                letter-spacing: 1px;
+            }
+
+            .metric-number {
+                font-size: 1.5rem;
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *,
+            *::before,
+            *::after {
+                animation: none !important;
+                transition: none !important;
+                scroll-behavior: auto !important;
+            }
         }
     """
 

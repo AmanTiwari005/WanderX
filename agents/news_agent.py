@@ -12,16 +12,16 @@ class NewsAgent:
         self.client = groq_client
         self.model = get_active_model_id()
 
-    def fetch_news(self, location, query_suffix="weather OR strike OR protest OR festival OR event OR closure"):
+    def fetch_news(self, location, query_suffix="weather OR strike OR protest OR emergency OR attack OR explosion OR war OR evacuation OR closure"):
         """
         Fetches raw news items using the web search utility (DuckDuckGo/Google fallback)
         for much faster and more accurate results than standard RSS.
         """
         try:
             query = f"{location} {query_suffix}"
-            
-            # Using search_news from utils, bounded to 7 results for context window
-            results = search_news(query, max_results=7)
+
+            # Using search_news from utils, bounded to 7 results for context window, time limited to past week
+            results = search_news(query, max_results=7, timelimit="w")
             
             items = []
             for res in results:
@@ -70,12 +70,13 @@ class NewsAgent:
         - Keep summaries brief and actionable
         - Focus on what helps travelers make better decisions
         - Assign a Safety Score (0-100) where 0=Safe, 100=Do Not Travel
-        
+        - If the news mentions bombings, explosions, war, state-level attacks, severe natural disasters, or mass evacuations, you MUST label severity as "Critical".
+
         Return JSON structure:
         {{
             "safety_score": 0,
             "verdict": "Safe/Caution/Critical",
-            "safety_risks": [ {{ "title": "Headline", "summary": "Impact on travel", "severity": "High/Medium/Low", "actionable_advice": "What should the traveler do right now to avoid this" }} ],
+            "safety_risks": [ {{ "title": "Headline", "summary": "Impact on travel", "severity": "Critical/High/Medium/Low", "actionable_advice": "What should the traveler do right now to avoid this" }} ],
             "opportunities": [ {{ "title": "Event name", "summary": "Why it enhances trip", "type": "Festival/Event/Exhibition" }} ],
             "interesting_facts": [ {{ "title": "Fact title", "description": "Brief interesting info", "category": "Culture/History/Food/Nature/Tip" }} ]
         }}

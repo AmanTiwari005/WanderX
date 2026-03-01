@@ -21,18 +21,18 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def search_web(query, max_results=5, region="wt-wt"):
+def search_web(query, max_results=5, region="wt-wt", timelimit=None):
     """
     Performs a web search using DuckDuckGo, falling back to Google.
     """
     results = []
-    
+
     # 1. Try DuckDuckGo
     if _HAS_DDGS:
         try:
             with DDGS(timeout=20) as ddgs:
                 # DDGS might return a generator
-                ddg_gen = ddgs.text(query, region=region, max_results=max_results)
+                ddg_gen = ddgs.text(query, region=region, timelimit=timelimit, max_results=max_results)
                 if ddg_gen:
                     results = list(ddg_gen)
         except Exception as e:
@@ -79,17 +79,18 @@ def search_web(query, max_results=5, region="wt-wt"):
 
     return results[:max_results]
 
-def search_news(query, max_results=5, region="wt-wt"):
+def search_news(query, max_results=5, region="wt-wt", timelimit="w"):
     """
     Performs a news search using DuckDuckGo, falling back to Google.
+    Limits to recent news (timelimit='w' for past week by default) to ensure relevance to real-time events.
     """
     results = []
-    
+
     # 1. Try DuckDuckGo
     if _HAS_DDGS:
         try:
             with DDGS(timeout=20) as ddgs:
-                ddg_gen = ddgs.news(query, region=region, max_results=max_results)
+                ddg_gen = ddgs.news(query, region=region, timelimit=timelimit, max_results=max_results)
                 if ddg_gen:
                     results = list(ddg_gen)
         except Exception as e:

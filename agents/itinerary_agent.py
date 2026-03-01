@@ -119,6 +119,18 @@ class ItineraryAgent:
                     summary = cal_event.get('summary', '')
                     special_constraints.append(f"LIVE EVENT: You MUST try to include '{title}' ({summary}) in the plan if dates/timings align.")
 
+        # 4. Risk Assessment
+        risk_intel = context.get("risk_assessment") or {}
+        if isinstance(risk_intel, dict):
+            verdict = risk_intel.get("verdict", "Safe")
+            factors = risk_intel.get("risk_factors", [])
+            if verdict == "Critical" or verdict == "Unsafe":
+                special_constraints.append(f"CRITICAL SAFETY WARNING: This destination has a '{verdict}' risk level. You MUST pivot this itinerary into a SAFE ZONE or ESCAPE/SHELTER plan. Avoid all high-risk areas. If outdoor travel is unsafe, plan only essential indoor/hotel activities.")
+                for factor in factors:
+                    special_constraints.append(f"RISK FACTOR TO AVOID: {factor.get('title', factor.get('reason', ''))}")
+            elif verdict == "Caution" or verdict == "High":
+                special_constraints.append(f"SAFETY ADVISORY: The risk level is '{verdict}'. Please build a guarded itinerary. Avoid crowds and unstable areas. Be highly vigilant.")
+
         constraints_str = "\n".join([f"           - {c}" for c in special_constraints])
 
         # ── Build Enriched Prompt ──

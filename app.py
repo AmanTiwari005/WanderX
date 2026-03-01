@@ -268,8 +268,10 @@ with st.sidebar:
         
         # Color logic
         r_color = "off"
-        if verdict == "Safe": r_color = "normal"
-        elif verdict == "Critical": r_color = "inverse"
+        if verdict == "Safe":
+            r_color = "normal"
+        elif verdict in ("Unsafe", "Critical"):
+            r_color = "inverse"
         
         st.metric(label="🛡️ Safety Status", value=verdict, delta=f"{score}/100 Risk", delta_color=r_color)
     else:
@@ -280,7 +282,9 @@ with st.sidebar:
         weather = st.session_state.latest_weather.get("weather_data", {})
         col1, col2 = st.columns(2)
         col1.metric("Temp", f"{weather.get('temperature_c', '--')}°C")
-        col2.metric("Rain", f"{weather.get('rain_probability', 0)}%")
+        rain_prob = weather.get("rain_probability", 0)
+        rain_pct = round(rain_prob * 100) if isinstance(rain_prob, (int, float)) and rain_prob <= 1 else round(rain_prob)
+        col2.metric("Rain", f"{rain_pct}%")
         st.caption(f"📍 {weather.get('city', 'Locating...')}")
 
     # 3. LIVE PULSE (New)
@@ -656,7 +660,8 @@ if len(st.session_state.messages) == 0 and not st.session_state.pending_action:
                  st.rerun()
 
     with col_visual:
-        lottie_url = "https://assets5.lottiefiles.com/packages/lf20_t2rfa1k1.json" # Travel Animation
+        # Using a highly reliable alternative URL since assets5 often returns 403
+        lottie_url = "https://lottie.host/801a613d-5de2-4c28-98e6-1215b4bc703e/dE4eP9t5Dq.json"
         lottie_json = load_lottieurl(lottie_url)
         if lottie_json:
             st_lottie(lottie_json, height=400, key="hero_lottie")
@@ -918,15 +923,43 @@ def render_interactive_stage():
         col_lucky, col_help = st.columns([1, 2])
         with col_lucky:
              if st.button("🎲 I'm Feeling Lucky", type="primary", use_container_width=True, help="Let AI pick a perfect spot for you!"):
-                 # Flatten all places
-                 all_places = [p for cat in recs.values() for p in cat]
-                 if all_places:
-                     lucky_pick = random.choice(all_places)
-                     st.toast(f"✨ Destiny chose: {lucky_pick}!")
-                     st.session_state.profile["destination"] = lucky_pick
-                     st.session_state.force_sync_sidebar = True
-                     st.session_state.messages.append({"role": "user", "content": f"I'm feeling lucky! Let's go to {lucky_pick}."})
-                     st.rerun()
+                 st.session_state.lucky_suggestions = de.get_surprise_destinations(profile, count=6)
+                 st.toast("✨ Generated smart surprise picks for you!")
+
+        with col_help:
+            if st.button("🎯 Pick Best for Me", use_container_width=True, help="Auto-pick one from AI surprise shortlist"):
+                lucky_options = st.session_state.get("lucky_suggestions") or de.get_surprise_destinations(profile, count=6)
+                if lucky_options:
+                    lucky_pick = random.choice(lucky_options).get("destination")
+                    st.session_state.profile["destination"] = lucky_pick
+                    st.session_state.force_sync_sidebar = True
+                    st.session_state.messages.append({"role": "user", "content": f"I'm feeling lucky! Let's go to {lucky_pick}."})
+                    st.rerun()
+
+        # Render Lucky suggestions
+        lucky_suggestions = st.session_state.get("lucky_suggestions", [])
+        if lucky_suggestions:
+            st.markdown("<div style='margin:10px 0 12px 0; color:#00e5ff; font-weight:700;'>✨ Surprise Picks For You</div>", unsafe_allow_html=True)
+            lucky_cols = st.columns(3)
+            for i, pick in enumerate(lucky_suggestions[:6]):
+                with lucky_cols[i % 3]:
+                    destination = pick.get("destination", "Unknown")
+                    theme = pick.get("theme", "Curated")
+                    reason = pick.get("reason", "Great destination match.")
+                    st.markdown(f"""
+                    <div style='background:linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.01)); border:1px solid rgba(0,229,255,0.2); border-radius:12px; padding:12px; min-height:140px; margin-bottom:8px;'>
+                        <div style='font-size:1.05rem; font-weight:700; color:#fff; margin-bottom:4px;'>{destination}</div>
+                        <div style='font-size:0.75rem; color:#00e5ff; margin-bottom:8px;'>{theme}</div>
+                        <div style='font-size:0.82rem; color:#cbd5e1; line-height:1.35;'>{reason}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    if st.button(f"Choose {destination}", key=f"choose_lucky_{i}", use_container_width=True):
+                        st.session_state.profile["destination"] = destination
+                        st.session_state.force_sync_sidebar = True
+                        st.session_state.messages.append({"role": "user", "content": f"Choose {destination} for my trip."})
+                        st.rerun()
+
+            st.markdown("---")
 
         st.markdown("---")
         
@@ -937,6 +970,7 @@ def render_interactive_stage():
         if col_go.button("🚀 Let's Go", use_container_width=True, type="primary"):
             if manual_dest:
                 st.session_state.profile["destination"] = manual_dest
+                st.session_state.lucky_suggestions = []
                 st.session_state.force_sync_sidebar = True
                 
                 # Check for pending action from Surprise Me or Plan My Trip
@@ -995,6 +1029,7 @@ def render_interactive_stage():
                             # Action Button (Unique Key Fixed)
                             if st.button(f"Explore {place}", key=f"btn_{category}_{place}", use_container_width=True):
                                 st.session_state.profile["destination"] = place
+                                st.session_state.lucky_suggestions = []
                                 st.session_state.force_sync_sidebar = True
                                 st.session_state.messages.append({"role": "user", "content": f"I want to explore {place}."})
                                 st.rerun()
@@ -1258,6 +1293,7 @@ def render_interactive_stage():
                     val = "None" if "None" in constr else constr
                     st.session_state.profile["constraints"] = val
                     st.session_state.force_sync_sidebar = True
+                    st.session_state.auto_run_after_onboarding = True
                     st.session_state.messages.append({"role": "assistant", "content": "Any special requirements or must-dos?"})
                     st.session_state.messages.append({"role": "user", "content": f"My focus: {constr}."})
                     st.rerun()
@@ -1267,6 +1303,7 @@ def render_interactive_stage():
         c_text = col_c_text.text_input("Custom requirements", key="manual_constr", label_visibility="collapsed", placeholder="e.g. 'Must see Eiffel Tower', 'Nut allergy'")
         if col_c_btn.button("✅ Save", use_container_width=True, key="btn_save_constr"):
             st.session_state.profile["constraints"] = c_text if c_text else "None"
+            st.session_state.auto_run_after_onboarding = True
             st.session_state.messages.append({"role": "assistant", "content": "Any special requirements or must-dos?"})
             st.session_state.messages.append({"role": "user", "content": f"Requirements: {c_text}."})
             st.rerun()
@@ -1377,12 +1414,12 @@ with st.sidebar:
     # 0. PROACTIVE ALERTS
     if "latest_alerts" in st.session_state and st.session_state.latest_alerts:
         for alert in st.session_state.latest_alerts:
-            type_map = {"warning": "⚠️", "critical": "🚨", "info": "ℹ️"}
+            type_map = {"warning": "⚠️", "high": "⚠️", "critical": "🚨", "info": "ℹ️"}
             icon = type_map.get(alert.get("type", "info"), "ℹ️")
             
             if alert.get("type") == "critical":
                 st.error(f"**{icon} {alert.get('title')}**\n\n{alert.get('message')}")
-            elif alert.get("type") == "warning":
+            elif alert.get("type") in ("warning", "high"):
                 st.warning(f"**{icon} {alert.get('title')}**\n\n{alert.get('message')}")
             else:
                 st.info(f"**{icon} {alert.get('title')}**\n\n{alert.get('message')}")
@@ -1396,9 +1433,12 @@ with st.sidebar:
         
         # Color logic
         r_color = "off"
-        if verdict == "Safe": r_color = "normal"
-        elif verdict == "Caution": r_color = "off"
-        elif verdict == "Critical": r_color = "inverse"
+        if verdict == "Safe":
+            r_color = "normal"
+        elif verdict == "Caution":
+            r_color = "off"
+        elif verdict in ("Unsafe", "Critical"):
+            r_color = "inverse"
         
         st.metric(label="🛡️ Risk Analysis", value=f"{score}/100", delta=verdict, delta_color=r_color)
         st.progress(score)
@@ -1430,6 +1470,33 @@ with st.sidebar:
     else:
         st.info("Waiting for mission data...")
 
+    # 1b. REAL-TIME DECISION SNAPSHOT
+    if st.session_state.get("latest_realtime_decision"):
+        snapshot = st.session_state.latest_realtime_decision
+        st.markdown("### ⚡ Real-Time Decision")
+
+        col_a, col_b = st.columns(2)
+        delta = snapshot.get("risk_delta", 0)
+        feed_health = snapshot.get("feed_health_score", 0)
+        col_a.metric("Risk Δ", f"{delta:+.1f}")
+        col_b.metric("Feed Health", f"{feed_health}/100")
+
+        direction = (snapshot.get("risk_direction") or "stable").title()
+        mode = (snapshot.get("risk_mode") or "normal").title()
+        urgency = snapshot.get("urgency_index", 0)
+        st.caption(f"Trend: {direction} | Mode: {mode} | Urgency: {urgency}/100")
+
+        new_alerts = snapshot.get("new_alerts", 0)
+        resolved_alerts = snapshot.get("resolved_alerts", 0)
+        if new_alerts or resolved_alerts:
+            st.info(f"🔔 Alert Changes: +{new_alerts} new, -{resolved_alerts} resolved")
+
+        next_actions = snapshot.get("next_actions") or []
+        if next_actions:
+            with st.expander("📌 Next Best Actions", expanded=False):
+                for action in next_actions[:4]:
+                    st.markdown(f"- {action}")
+
     # 2. BUDGET TRACKER
     budget = st.session_state.profile.get("budget", "Not set")
     st.metric(label="💰 Budget Tier", value=budget)
@@ -1442,7 +1509,9 @@ with st.sidebar:
     if weather:
         col1, col2 = st.columns(2)
         col1.metric("Temp", f"{weather.get('temperature_c', '--')}°C")
-        col2.metric("Rain", f"{weather.get('rain_probability', 0)}%")
+        rain_prob = weather.get("rain_probability", 0)
+        rain_pct = round(rain_prob * 100) if isinstance(rain_prob, (int, float)) and rain_prob <= 1 else round(rain_prob)
+        col2.metric("Rain", f"{rain_pct}%")
         st.caption(f"📍 {weather.get('city', 'Locating...')}")
     
     # News Alerts (Collapsible)
@@ -1562,11 +1631,19 @@ if not st.session_state.messages:
 is_interactive_mode = render_interactive_stage()
 
 if not is_interactive_mode:
+    # Auto-trigger one analysis pass right after onboarding is completed
+    if st.session_state.get("auto_run_after_onboarding"):
+        last_msg = st.session_state.messages[-1] if st.session_state.messages else {}
+        if last_msg.get("role") == "user":
+            user = last_msg.get("content")
+            st.session_state.skip_user_append_once = True
+        st.session_state.auto_run_after_onboarding = False
+
     # Check for pending actions (from buttons)
-    if st.session_state.get("pending_action"):
+    if user is None and st.session_state.get("pending_action"):
         user = st.session_state.pending_action
         st.session_state.pending_action = None
-    else:
+    elif user is None:
         # Chat Input
         text_input = st.chat_input("Talk about your trip… anything 🙂")
         
@@ -1574,7 +1651,10 @@ if not is_interactive_mode:
 
 
 if user:
-    st.session_state.messages.append({"role": "user", "content": user})
+    if st.session_state.get("skip_user_append_once"):
+        st.session_state.skip_user_append_once = False
+    else:
+        st.session_state.messages.append({"role": "user", "content": user})
     extract_profile(user)
     
     # Force clear legacy "Flexible" hallucinations
@@ -1616,6 +1696,8 @@ if user:
                      
                      # Proactive Alerts
                      st.session_state.latest_alerts = intel.get("alerts", [])
+                     st.session_state.latest_decision_automation = intel.get("decision_automation", {})
+                     st.session_state.latest_realtime_decision = intel.get("realtime_decision", {})
                      
                      # Legacy Context Adapter (for DecisionEngine compatibility if needed)
                      # But ideally we use the intel directly.
